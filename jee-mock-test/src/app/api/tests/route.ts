@@ -83,7 +83,7 @@ export async function POST(req: NextRequest) {
       marks_incorrect: q.marks_incorrect,
       topic: q.topic ?? null,
       subtopic: q.subtopic ?? null,
-      diagram_url: null,
+      diagram_url: (q as any).diagram_url ?? null,
     }));
 
     const { error: qErr } = await db.from("questions").insert(questionRows);

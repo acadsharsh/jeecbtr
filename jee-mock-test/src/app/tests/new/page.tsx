@@ -3,8 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
-import { Loader2, Plus, Trash2, Eye, EyeOff } from "lucide-react";
+import { Loader2, Plus, Trash2, Eye, EyeOff, ImagePlus, X, Image } from "lucide-react";
 import type { GeneratedQuestion, Subject, Difficulty } from "@/types";
+
+// ─── Per-question diagram state ───────────────────────────────────────
+type DiagramMap = Record<number, { url: string; uploading: boolean }>;
 
 export default function NewTestPage() {
   const router = useRouter();
@@ -22,6 +25,7 @@ export default function NewTestPage() {
   const [saving, setSaving] = useState(false);
   const [pdfFileName, setPdfFileName] = useState("");
   const [activeTab, setActiveTab] = useState<"details" | "questions">("details");
+  const [diagrams, setDiagrams] = useState<DiagramMap>({});
 
   useEffect(() => {
     if (fromImport) {
@@ -49,6 +53,7 @@ export default function NewTestPage() {
       const parsed = JSON.parse(jsonRaw);
       if (!parsed.questions || !Array.isArray(parsed.questions)) throw new Error();
       setQuestions(parsed.questions);
+      setDiagrams({});
       toast.success(`Loaded ${parsed.questions.length} questions`);
     } catch {
       toast.error("Invalid JSON format");
@@ -57,6 +62,53 @@ export default function NewTestPage() {
 
   const removeQuestion = (i: number) => {
     setQuestions((prev) => prev.filter((_, idx) => idx !== i));
+    setDiagrams((prev) => {
+      const next = { ...prev };
+      delete next[i];
+      return next;
+    });
+  };
+
+  // ─── Diagram upload (client-side, before test is saved) ──────────────
+  // We upload to storage immediately and store the URL locally.
+  // The URL is then attached to the question row when the test is saved.
+  const handleDiagramUpload = async (questionIndex: number, file: File) => {
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+      toast.error("Only PNG, JPEG, WEBP allowed");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error("Image too large (max 5 MB)");
+      return;
+    }
+
+    setDiagrams((prev) => ({ ...prev, [questionIndex]: { url: "", uploading: true } }));
+
+    try {
+      const formData = new FormData();
+      formData.append("image", file);
+      // no question_id yet — test isn't saved yet, just get the URL
+      const res = await fetch("/api/upload-diagram", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Upload failed");
+      setDiagrams((prev) => ({ ...prev, [questionIndex]: { url: data.url, uploading: false } }));
+      toast.success("Diagram uploaded");
+    } catch (err: any) {
+      toast.error(err.message || "Upload failed");
+      setDiagrams((prev) => {
+        const next = { ...prev };
+        delete next[questionIndex];
+        return next;
+      });
+    }
+  };
+
+  const removeDiagram = (questionIndex: number) => {
+    setDiagrams((prev) => {
+      const next = { ...prev };
+      delete next[questionIndex];
+      return next;
+    });
   };
 
   const handleSubmit = async () => {
@@ -65,6 +117,12 @@ export default function NewTestPage() {
 
     setSaving(true);
     try {
+      // Attach diagram URLs to questions before sending
+      const questionsWithDiagrams = questions.map((q, i) => ({
+        ...q,
+        diagram_url: diagrams[i]?.url || null,
+      }));
+
       const res = await fetch("/api/tests", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -76,7 +134,7 @@ export default function NewTestPage() {
           duration_mins: durationMins,
           is_public: isPublic,
           source_pdf_name: pdfFileName || null,
-          questions,
+          questions: questionsWithDiagrams,
         }),
       });
       const data = await res.json();
@@ -221,28 +279,78 @@ export default function NewTestPage() {
                   Total marks: {questions.reduce((s, q) => s + q.marks_correct, 0)}
                 </p>
               </div>
-              <div className="space-y-2 max-h-[400px] overflow-y-auto pr-1">
-                {questions.map((q, i) => (
-                  <div key={i} className="border-2 border-ink-900 bg-white p-3 flex items-start gap-3">
-                    <span className="font-mono text-xs font-bold text-ink-400 mt-0.5 w-6 shrink-0">
-                      {q.question_number ?? i + 1}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm font-body text-ink-900 line-clamp-2">{q.question_text}</p>
-                      <div className="flex gap-2 mt-1">
-                        <span className="badge text-ink-400 border-ink-200 text-[10px]">{q.question_type}</span>
-                        <span className="badge text-amber-600 border-amber-400 text-[10px]">+{q.marks_correct}/{q.marks_incorrect}</span>
-                        {q.topic && <span className="badge text-ink-400 border-ink-200 text-[10px]">{q.topic}</span>}
+              <div className="space-y-2 max-h-[520px] overflow-y-auto pr-1">
+                {questions.map((q, i) => {
+                  const diagram = diagrams[i];
+                  return (
+                    <div key={i} className="border-2 border-ink-900 bg-white p-3">
+                      <div className="flex items-start gap-3">
+                        {/* Question number */}
+                        <span className="font-mono text-xs font-bold text-ink-400 mt-0.5 w-6 shrink-0">
+                          {q.question_number ?? i + 1}
+                        </span>
+
+                        {/* Content */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-body text-ink-900 line-clamp-2">{q.question_text}</p>
+                          <div className="flex gap-2 mt-1 flex-wrap">
+                            <span className="badge text-ink-400 border-ink-200 text-[10px]">{q.question_type}</span>
+                            <span className="badge text-amber-600 border-amber-400 text-[10px]">+{q.marks_correct}/{q.marks_incorrect}</span>
+                            {q.topic && <span className="badge text-ink-400 border-ink-200 text-[10px]">{q.topic}</span>}
+                          </div>
+
+                          {/* ── Diagram section ── */}
+                          <div className="mt-2">
+                            {diagram?.uploading ? (
+                              <div className="flex items-center gap-1.5 text-xs text-ink-400 font-mono">
+                                <Loader2 size={11} className="animate-spin" /> Uploading…
+                              </div>
+                            ) : diagram?.url ? (
+                              <div className="flex items-center gap-2 mt-1">
+                                <img
+                                  src={diagram.url}
+                                  alt={`Diagram Q${i + 1}`}
+                                  className="h-14 w-auto border border-ink-200 object-contain"
+                                />
+                                <button
+                                  onClick={() => removeDiagram(i)}
+                                  className="p-1 text-ink-300 hover:text-red-500 transition-colors"
+                                  title="Remove diagram"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            ) : (
+                              <label className="inline-flex items-center gap-1.5 cursor-pointer text-[11px] font-mono text-ink-400 hover:text-ink-700 transition-colors mt-1">
+                                <ImagePlus size={12} />
+                                Add diagram
+                                <input
+                                  type="file"
+                                  accept="image/png,image/jpeg,image/webp"
+                                  className="hidden"
+                                  onChange={(e) => {
+                                    const f = e.target.files?.[0];
+                                    if (f) handleDiagramUpload(i, f);
+                                    e.target.value = "";
+                                  }}
+                                />
+                              </label>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Remove question */}
+                        <button
+                          onClick={() => removeQuestion(i)}
+                          className="p-1 text-ink-300 hover:text-red-500 transition-colors shrink-0"
+                          title="Remove question"
+                        >
+                          <Trash2 size={13} />
+                        </button>
                       </div>
                     </div>
-                    <button
-                      onClick={() => removeQuestion(i)}
-                      className="p-1 text-ink-300 hover:text-crimson-500 transition-colors shrink-0"
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}

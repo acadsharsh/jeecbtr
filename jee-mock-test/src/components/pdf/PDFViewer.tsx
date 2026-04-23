@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
 import toast from "react-hot-toast";
-import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Crop, Upload, X, Image as ImageIcon } from "lucide-react";
+import { ZoomIn, ZoomOut, ChevronLeft, ChevronRight, Crop, Upload, X, Image as ImageIcon, CheckCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { CropRect } from "@/types";
 
@@ -13,7 +13,7 @@ interface PDFViewerProps {
 
 export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const overlayRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null); // scrollable container
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pdfDocRef = useRef<any>(null);
 
@@ -30,22 +30,24 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
   const [selectedQuestionId, setSelectedQuestionId] = useState<string>("");
   const [pdfJsReady, setPdfJsReady] = useState(false);
 
-  // Load PDF.js dynamically
+  // Load PDF.js v3 (non-module, works reliably with Next.js)
   useEffect(() => {
     if ((window as any).pdfjsLib) { setPdfJsReady(true); return; }
-    
-    const workerScript = document.createElement("script");
-    workerScript.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-    document.head.appendChild(workerScript);
 
-    const script = document.createElement("script");
-    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-    script.onload = () => {
+    const loadScript = (src: string) =>
+      new Promise<void>((resolve) => {
+        const s = document.createElement("script");
+        s.src = src;
+        s.onload = () => resolve();
+        document.head.appendChild(s);
+      });
+
+    (async () => {
+      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js");
       (window as any).pdfjsLib.GlobalWorkerOptions.workerSrc =
         "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
       setPdfJsReady(true);
-    };
-    document.head.appendChild(script);
+    })();
   }, []);
 
   // Auto-select first question
@@ -76,12 +78,11 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
   }, [page, scale, pdfLoaded, renderPage]);
 
   const loadPDF = async (file: File) => {
-    if (!pdfJsReady) { toast.error("PDF viewer still loading, try again in a moment"); return; }
-    const pdfjsLib = (window as any).pdfjsLib;
+    if (!pdfJsReady) { toast.error("PDF viewer still loading, please wait"); return; }
     setLoading(true);
     try {
       const arrayBuffer = await file.arrayBuffer();
-      const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      const pdf = await (window as any).pdfjsLib.getDocument({ data: arrayBuffer }).promise;
       pdfDocRef.current = pdf;
       setTotalPages(pdf.numPages);
       setPage(1);
@@ -93,24 +94,35 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
     }
   };
 
-  // ─── Crop drag handlers ───────────────────────────────────────────
-  const getRelativePos = (e: React.MouseEvent, el: HTMLElement) => {
-    const rect = el.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  // ─── Get mouse position relative to the CANVAS element ────────────
+  // This is the key fix: we use the canvas rect + container scroll offset
+  // so coordinates always map 1:1 to canvas pixels regardless of scroll.
+  const getCanvasPos = (e: React.MouseEvent): { x: number; y: number } | null => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return null;
+
+    const canvasRect = canvas.getBoundingClientRect();
+    return {
+      x: e.clientX - canvasRect.left,
+      y: e.clientY - canvasRect.top,
+    };
   };
 
   const onMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!cropMode || !overlayRef.current) return;
+    if (!cropMode) return;
     e.preventDefault();
-    const pos = getRelativePos(e, overlayRef.current);
+    const pos = getCanvasPos(e);
+    if (!pos) return;
     setCropStart(pos);
     setCropRect(null);
     setIsDragging(true);
   };
 
   const onMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDragging || !cropStart || !overlayRef.current) return;
-    const pos = getRelativePos(e, overlayRef.current);
+    if (!isDragging || !cropStart) return;
+    const pos = getCanvasPos(e);
+    if (!pos) return;
     setCropRect({
       x: Math.min(cropStart.x, pos.x),
       y: Math.min(cropStart.y, pos.y),
@@ -121,26 +133,54 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
 
   const onMouseUp = () => setIsDragging(false);
 
+  // ─── Capture crop from canvas and upload ──────────────────────────
   const captureAndUpload = async () => {
     if (!cropRect || !canvasRef.current) return;
-    if (cropRect.width < 10 || cropRect.height < 10) { toast.error("Selection too small — drag a larger area"); return; }
-    if (!selectedQuestionId) { toast.error("Select a question to attach this diagram to"); return; }
+    if (cropRect.width < 5 || cropRect.height < 5) {
+      toast.error("Selection too small — drag a bigger area");
+      return;
+    }
+    if (!selectedQuestionId) {
+      toast.error("Select a question to attach this diagram to");
+      return;
+    }
+
+    // Canvas is rendered at device-pixel-ratio 1 since we set canvas.width/height directly.
+    // The crop coordinates from getBoundingClientRect are in CSS pixels.
+    // The canvas may be scaled by CSS — we need to scale crop coords to canvas pixel space.
+    const canvas = canvasRef.current;
+    const canvasRect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / canvasRect.width;
+    const scaleY = canvas.height / canvasRect.height;
+
+    const px = Math.round(cropRect.x * scaleX);
+    const py = Math.round(cropRect.y * scaleY);
+    const pw = Math.round(cropRect.width * scaleX);
+    const ph = Math.round(cropRect.height * scaleY);
+
+    // Clamp to canvas bounds
+    const sx = Math.max(0, px);
+    const sy = Math.max(0, py);
+    const sw = Math.min(pw, canvas.width - sx);
+    const sh = Math.min(ph, canvas.height - sy);
+
+    if (sw <= 0 || sh <= 0) {
+      toast.error("Selection is outside the PDF area");
+      return;
+    }
 
     setUploading(true);
     try {
       const offscreen = document.createElement("canvas");
-      offscreen.width = Math.round(cropRect.width);
-      offscreen.height = Math.round(cropRect.height);
+      offscreen.width = sw;
+      offscreen.height = sh;
       const ctx = offscreen.getContext("2d")!;
-      ctx.drawImage(
-        canvasRef.current,
-        Math.round(cropRect.x), Math.round(cropRect.y),
-        Math.round(cropRect.width), Math.round(cropRect.height),
-        0, 0,
-        Math.round(cropRect.width), Math.round(cropRect.height)
+      ctx.drawImage(canvas, sx, sy, sw, sh, 0, 0, sw, sh);
+
+      const blob = await new Promise<Blob>((res, rej) =>
+        offscreen.toBlob(b => b ? res(b) : rej(new Error("Canvas export failed")), "image/png")
       );
 
-      const blob = await new Promise<Blob>((res) => offscreen.toBlob((b) => res(b!), "image/png"));
       const form = new FormData();
       form.append("image", blob, "diagram.png");
       form.append("question_id", selectedQuestionId);
@@ -149,12 +189,13 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      toast.success("Diagram attached to question!");
+      const qNum = questions.find(q => q.id === selectedQuestionId)?.question_number;
+      toast.success(`Diagram attached to Q${qNum}!`);
       onDiagramUploaded?.(selectedQuestionId, data.url);
       setCropRect(null);
       setCropMode(false);
     } catch (err: any) {
-      toast.error(err.message);
+      toast.error(err.message || "Upload failed");
     } finally {
       setUploading(false);
     }
@@ -164,26 +205,20 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
 
   return (
     <div className="border-2 border-ink-900 bg-white overflow-hidden">
+
       {/* ── Toolbar ─────────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 px-4 py-2 border-b-2 border-ink-900 bg-ink-900 flex-wrap">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept="application/pdf"
-          className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) loadPDF(f); }}
-        />
-        <button
-          onClick={() => fileInputRef.current?.click()}
-          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono bg-amber-500 text-ink-900 border border-amber-500 hover:bg-amber-400 transition-colors"
-        >
+        <input ref={fileInputRef} type="file" accept="application/pdf" className="hidden"
+          onChange={e => { const f = e.target.files?.[0]; if (f) loadPDF(f); }} />
+
+        <button onClick={() => fileInputRef.current?.click()}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-mono bg-amber-500 text-ink-900 border border-amber-500 hover:bg-amber-400 transition-colors">
           <Upload size={12} /> Open PDF
         </button>
 
         {pdfLoaded && (
           <>
             <div className="h-4 w-px bg-ink-700" />
-            {/* Page nav */}
             <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}
               className="p-1 text-ink-300 hover:text-ink-50 disabled:opacity-30 transition-colors">
               <ChevronLeft size={14} />
@@ -195,7 +230,6 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
             </button>
 
             <div className="h-4 w-px bg-ink-700" />
-            {/* Zoom */}
             <button onClick={() => setScale(s => Math.max(0.5, s - 0.2))}
               className="p-1 text-ink-300 hover:text-ink-50 transition-colors">
               <ZoomOut size={14} />
@@ -207,30 +241,25 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
             </button>
 
             <div className="h-4 w-px bg-ink-700" />
-            {/* Crop toggle */}
             <button
-              onClick={() => { setCropMode(c => !c); setCropRect(null); }}
+              onClick={() => { setCropMode(c => !c); setCropRect(null); setCropStart(null); }}
               className={cn(
                 "flex items-center gap-1 px-2 py-1 text-xs font-mono border transition-colors",
-                cropMode
-                  ? "bg-amber-500 text-ink-900 border-amber-500"
-                  : "text-ink-300 border-ink-600 hover:border-ink-400"
-              )}
-            >
+                cropMode ? "bg-amber-500 text-ink-900 border-amber-500" : "text-ink-300 border-ink-600 hover:border-ink-400"
+              )}>
               <Crop size={12} /> {cropMode ? "Cropping…" : "Crop Diagram"}
             </button>
 
-            {/* Upload crop button */}
-            {cropRect && (
+            {cropRect && cropRect.width > 5 && cropRect.height > 5 && (
               <>
-                <button
-                  onClick={captureAndUpload}
-                  disabled={uploading || !selectedQuestionId}
-                  className="px-2 py-1 text-xs font-mono bg-emerald-500 text-white border border-emerald-600 hover:bg-emerald-600 transition-colors disabled:opacity-50"
-                >
-                  {uploading ? "Uploading…" : "Attach to Q" + (selectedQ?.question_number ?? "?")}
+                <button onClick={captureAndUpload} disabled={uploading || !selectedQuestionId}
+                  className="flex items-center gap-1 px-3 py-1 text-xs font-mono bg-emerald-500 text-white border border-emerald-600 hover:bg-emerald-600 transition-colors disabled:opacity-50">
+                  {uploading
+                    ? <><span className="animate-spin">⏳</span> Uploading…</>
+                    : <><CheckCircle size={12} /> Attach to Q{selectedQ?.question_number ?? "?"}</>
+                  }
                 </button>
-                <button onClick={() => setCropRect(null)}
+                <button onClick={() => { setCropRect(null); setCropStart(null); }}
                   className="p-1 text-ink-400 hover:text-ink-50 transition-colors">
                   <X size={13} />
                 </button>
@@ -245,55 +274,62 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
         <div className="flex items-center gap-3 px-4 py-2 border-b border-ink-200 bg-ink-50">
           <div className="flex items-center gap-1.5 shrink-0">
             <ImageIcon size={13} className="text-ink-500" />
-            <span className="text-xs font-mono text-ink-600 font-medium">Attach diagram to:</span>
+            <span className="text-xs font-mono text-ink-600 font-medium">Attach to:</span>
           </div>
-          <select
-            value={selectedQuestionId}
-            onChange={(e) => setSelectedQuestionId(e.target.value)}
-            className="flex-1 text-xs font-body border border-ink-300 bg-white px-2 py-1 focus:outline-none focus:border-ink-900 min-w-0"
-          >
-            {questions.map((q) => (
+          <select value={selectedQuestionId} onChange={e => setSelectedQuestionId(e.target.value)}
+            className="flex-1 text-xs font-body border border-ink-300 bg-white px-2 py-1.5 focus:outline-none focus:border-ink-900 min-w-0">
+            {questions.map(q => (
               <option key={q.id} value={q.id}>
-                Q{q.question_number}: {q.question_text.slice(0, 60)}{q.question_text.length > 60 ? "…" : ""}
-                {q.diagram_url ? " ✓" : ""}
+                Q{q.question_number}: {q.question_text.slice(0, 55)}{q.question_text.length > 55 ? "…" : ""}
+                {q.diagram_url ? "  ✓" : ""}
               </option>
             ))}
           </select>
           {selectedQ?.diagram_url && (
-            <span className="text-[10px] font-mono text-emerald-600 shrink-0">✓ has diagram</span>
+            <span className="text-[10px] font-mono text-emerald-600 shrink-0 flex items-center gap-1">
+              <CheckCircle size={10} /> has diagram
+            </span>
           )}
         </div>
       )}
 
-      {/* ── Canvas area ──────────────────────────────────────────────── */}
-      <div className="overflow-auto bg-ink-100 flex justify-center p-4" style={{ maxHeight: "560px" }}>
+      {/* ── Scrollable canvas container ──────────────────────────────── */}
+      <div
+        ref={containerRef}
+        className="overflow-auto bg-ink-100"
+        style={{ maxHeight: "560px" }}
+      >
         {!pdfLoaded ? (
           <div
-            className="flex flex-col items-center justify-center w-full h-64 border-2 border-dashed border-ink-300 cursor-pointer hover:border-ink-900 transition-colors"
+            className="flex flex-col items-center justify-center h-64 border-2 border-dashed border-ink-300 m-4 cursor-pointer hover:border-ink-900 transition-colors"
             onClick={() => fileInputRef.current?.click()}
           >
             <Upload size={24} className="text-ink-400 mb-3" />
             <p className="text-sm font-body text-ink-600 font-medium">Click to open a PDF</p>
             <p className="text-xs font-mono text-ink-400 mt-1">
-              {pdfJsReady ? "Then use Crop Diagram to select figures" : "Loading PDF viewer…"}
+              {pdfJsReady ? "Then use Crop Diagram to select any figure" : "Loading PDF viewer…"}
             </p>
           </div>
         ) : (
-          <div className="pdf-canvas-wrapper relative select-none">
-            <canvas ref={canvasRef} className={cn("block", loading && "opacity-40")} />
-            {/* Drag-to-crop overlay */}
+          // Position relative so the crop overlay is positioned relative to canvas
+          <div className="flex justify-center p-4">
             <div
-              ref={overlayRef}
-              className="absolute inset-0"
+              className="relative inline-block select-none"
               style={{ cursor: cropMode ? "crosshair" : "default" }}
               onMouseDown={onMouseDown}
               onMouseMove={onMouseMove}
               onMouseUp={onMouseUp}
               onMouseLeave={onMouseUp}
             >
-              {cropRect && cropRect.width > 2 && cropRect.height > 2 && (
+              <canvas
+                ref={canvasRef}
+                className={cn("block", loading && "opacity-40")}
+              />
+
+              {/* Crop selection box — positioned in CSS pixels over the canvas */}
+              {cropMode && cropRect && cropRect.width > 2 && cropRect.height > 2 && (
                 <div
-                  className="absolute border-2 border-dashed border-amber-500 bg-amber-400/10 pointer-events-none"
+                  className="absolute border-2 border-amber-500 bg-amber-400/10 pointer-events-none"
                   style={{
                     left: cropRect.x,
                     top: cropRect.y,
@@ -301,18 +337,18 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
                     height: cropRect.height,
                   }}
                 >
-                  {/* Corner handles */}
-                  {[
-                    "top-0 left-0 -translate-x-1/2 -translate-y-1/2",
+                  {/* Size label */}
+                  <div className="absolute -top-5 left-0 bg-amber-500 text-ink-900 text-[9px] font-mono px-1 py-0.5 whitespace-nowrap leading-tight">
+                    {Math.round(cropRect.width)} × {Math.round(cropRect.height)}
+                  </div>
+                  {/* Corner dots */}
+                  {["top-0 left-0 -translate-x-1/2 -translate-y-1/2",
                     "top-0 right-0 translate-x-1/2 -translate-y-1/2",
                     "bottom-0 left-0 -translate-x-1/2 translate-y-1/2",
                     "bottom-0 right-0 translate-x-1/2 translate-y-1/2",
                   ].map((cls, i) => (
-                    <div key={i} className={`absolute w-2.5 h-2.5 bg-amber-500 border border-white ${cls}`} />
+                    <div key={i} className={`absolute w-2 h-2 bg-amber-500 border border-white ${cls}`} />
                   ))}
-                  <div className="absolute -top-6 left-0 bg-amber-500 text-ink-900 text-[10px] font-mono px-1.5 py-0.5 whitespace-nowrap">
-                    {Math.round(cropRect.width)} × {Math.round(cropRect.height)}px
-                  </div>
                 </div>
               )}
             </div>
@@ -329,10 +365,10 @@ export function PDFViewer({ questions = [], onDiagramUploaded }: PDFViewerProps)
             : "bg-ink-50 border-ink-200 text-ink-500"
         )}>
           {cropMode
-            ? cropRect
-              ? `Selection: ${Math.round(cropRect.width)}×${Math.round(cropRect.height)}px — click "Attach to Q${selectedQ?.question_number ?? "?"}" to save`
-              : "🎯 Click and drag on the PDF to select a diagram area"
-            : `Page ${page} of ${totalPages} — click "Crop Diagram" to start selecting`
+            ? cropRect && cropRect.width > 5
+              ? `Selected ${Math.round(cropRect.width)}×${Math.round(cropRect.height)}px — click "Attach to Q${selectedQ?.question_number}" to save`
+              : "🎯 Click and drag directly on the PDF to select a diagram"
+            : `Page ${page} / ${totalPages} — click "Crop Diagram" to start`
           }
         </div>
       )}

@@ -134,3 +134,28 @@
 .stagger-children > *:nth-child(4) { animation-delay: 0.20s; }
 .stagger-children > *:nth-child(5) { animation-delay: 0.25s; }
 .stagger-children > *:nth-child(6) { animation-delay: 0.30s; }
+
+/* ─── KaTeX math rendering ──────────────────────────────────────────── */
+.katex-display {
+  margin: 0.5em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.katex {
+  font-size: 1.05em;
+  line-height: 1.6;
+}
+
+/* Slightly smaller math in option buttons */
+.option-btn .katex {
+  font-size: 0.95em;
+}
+
+/* Make display math scroll horizontally on small screens */
+.katex-display > .katex {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+}

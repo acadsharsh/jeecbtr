@@ -52,23 +52,10 @@ export default function UploadPage() {
   };
 
   const copyPrompt = async () => {
-    try {
-      await navigator.clipboard.writeText(prompt);
-      setCopied(true);
-      toast.success("Prompt copied!");
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback for browsers that block clipboard API
-      const el = document.createElement("textarea");
-      el.value = prompt;
-      document.body.appendChild(el);
-      el.select();
-      document.execCommand("copy");
-      document.body.removeChild(el);
-      setCopied(true);
-      toast.success("Prompt copied!");
-      setTimeout(() => setCopied(false), 2000);
-    }
+    await navigator.clipboard.writeText(prompt);
+    setCopied(true);
+    toast.success("Prompt copied!");
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const handleImportJSON = async () => {
@@ -76,6 +63,7 @@ export default function UploadPage() {
     try {
       const parsed = JSON.parse(jsonInput);
       if (!parsed.questions || !Array.isArray(parsed.questions)) throw new Error("Invalid JSON format");
+      // Store in sessionStorage and redirect to test creator
       sessionStorage.setItem("importedQuestions", jsonInput);
       sessionStorage.setItem("pdfFileName", file?.name || "");
       router.push("/tests/new?from=import");
@@ -111,9 +99,7 @@ export default function UploadPage() {
             <span className="w-5 h-5 border-2 border-current flex items-center justify-center text-xs shrink-0">
               {i + 1}
             </span>
-            <span className="capitalize">
-              {s === "paste" ? "Import JSON" : s === "prompt" ? "Copy Prompt" : "Upload PDF"}
-            </span>
+            <span className="capitalize">{s === "paste" ? "Import JSON" : s === "prompt" ? "Copy Prompt" : "Upload PDF"}</span>
           </div>
         ))}
       </div>
@@ -121,6 +107,7 @@ export default function UploadPage() {
       {/* ── Step 1: Upload ─────────────────────────────────────────────── */}
       {step === "upload" && (
         <div className="space-y-6">
+          {/* Drop zone */}
           <div
             onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
             onDragLeave={() => setIsDragging(false)}
@@ -153,16 +140,25 @@ export default function UploadPage() {
             )}
           </div>
 
+          {/* Options */}
           <div className="grid grid-cols-3 gap-4">
             <div>
               <label className="section-label block mb-2">Subject</label>
-              <select value={subject} onChange={(e) => setSubject(e.target.value)} className="input-neo">
+              <select
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                className="input-neo"
+              >
                 {subjects.map((s) => <option key={s} value={s} className="capitalize">{s}</option>)}
               </select>
             </div>
             <div>
               <label className="section-label block mb-2">Difficulty</label>
-              <select value={difficulty} onChange={(e) => setDifficulty(e.target.value)} className="input-neo">
+              <select
+                value={difficulty}
+                onChange={(e) => setDifficulty(e.target.value)}
+                className="input-neo"
+              >
                 {difficulties.map((d) => <option key={d} value={d} className="capitalize">{d}</option>)}
               </select>
             </div>
@@ -196,10 +192,13 @@ export default function UploadPage() {
       {/* ── Step 2: Copy Prompt ────────────────────────────────────────── */}
       {step === "prompt" && (
         <div className="space-y-6">
-          {/* Prompt box */}
           <div className="card-neo p-0 overflow-hidden">
             <div className="px-4 py-3 bg-ink-900 text-ink-50 flex items-center justify-between">
-              <span className="font-mono text-xs">Generated Prompt — paste into ChatGPT / Claude / Gemini</span>
+              <span className="font-mono text-xs">Generated Prompt — paste this into ChatGPT / Claude / Gemini</span>
+              <button onClick={copyPrompt} className="flex items-center gap-1.5 text-xs font-mono hover:text-amber-400 transition-colors">
+                {copied ? <Check size={13} /> : <Copy size={13} />}
+                {copied ? "Copied!" : "Copy"}
+              </button>
             </div>
             <textarea
               readOnly
@@ -207,20 +206,6 @@ export default function UploadPage() {
               className="w-full h-80 p-4 font-mono text-xs text-ink-700 bg-ink-50 resize-none focus:outline-none"
             />
           </div>
-
-          {/* ── Prominent copy button (was hidden in dark header) ── */}
-          <button
-            onClick={copyPrompt}
-            className={cn(
-              "w-full flex items-center justify-center gap-2 py-3 border-2 font-mono text-sm font-medium transition-colors",
-              copied
-                ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-                : "border-ink-900 bg-white text-ink-900 hover:bg-amber-50 hover:border-amber-500"
-            )}
-          >
-            {copied ? <Check size={15} /> : <Copy size={15} />}
-            {copied ? "Copied to clipboard!" : "Copy Prompt"}
-          </button>
 
           <div className="border-2 border-amber-500 bg-amber-50 p-4 text-sm font-body text-ink-800">
             <strong className="font-bold">How to use:</strong> Copy the prompt above → open ChatGPT, Claude.ai, or Gemini → paste and send → copy the JSON response → come back and click Next.

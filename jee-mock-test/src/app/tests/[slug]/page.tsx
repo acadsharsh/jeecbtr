@@ -6,6 +6,7 @@ import { formatDate, formatTime } from "@/lib/utils";
 import { Clock, BookOpen, Globe, Lock, Play, BarChart3 } from "lucide-react";
 import { ShareButton } from "@/components/test/ShareButton";
 import { TogglePublicButton } from "@/components/test/TogglePublicButton";
+import { MathText } from "@/components/ui/MathText";
 import type { Test, Question } from "@/types";
 
 interface Props { params: { slug: string } }
@@ -94,19 +95,24 @@ export default async function TestPage({ params }: Props) {
       </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
+        {/* Questions list with math preview */}
         <div className="lg:col-span-2 card-neo p-0 overflow-hidden">
           <div className="px-5 py-3 border-b-2 border-ink-900 bg-ink-900 text-ink-50">
             <span className="font-mono text-xs">Questions Preview</span>
           </div>
           <div className="divide-y divide-ink-100 max-h-[600px] overflow-y-auto">
-            {questions.map((q) => (
+            {questions.map(q => (
               <div key={q.id} className="px-5 py-4 hover:bg-ink-50 transition-colors">
                 <div className="flex items-start gap-3">
                   <span className="font-mono text-xs font-bold text-ink-400 mt-0.5 w-6 shrink-0">{q.question_number}</span>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-body text-ink-900 line-clamp-2">{q.question_text}</p>
-                    <div className="flex gap-2 mt-1.5">
-                      <span className="badge text-ink-400 border-ink-200 text-[10px] capitalize">{q.question_type.replace("_", " ")}</span>
+                    <div className="text-sm font-body text-ink-900 line-clamp-2 leading-relaxed">
+                      <MathText text={q.question_text} />
+                    </div>
+                    <div className="flex gap-2 mt-1.5 flex-wrap">
+                      <span className="badge text-ink-400 border-ink-200 text-[10px] capitalize">
+                        {q.question_type.replace("_", " ")}
+                      </span>
                       {q.topic && <span className="badge text-amber-600 border-amber-300 text-[10px]">{q.topic}</span>}
                       {q.diagram_url && <span className="badge text-blue-600 border-blue-300 text-[10px]">📷 diagram</span>}
                     </div>
@@ -119,7 +125,9 @@ export default async function TestPage({ params }: Props) {
 
         <div className="space-y-5">
           <div className="card-neo p-0 overflow-hidden">
-            <div className="px-4 py-3 border-b-2 border-ink-900 bg-ink-50"><span className="section-label">Question Types</span></div>
+            <div className="px-4 py-3 border-b-2 border-ink-900 bg-ink-50">
+              <span className="section-label">Question Types</span>
+            </div>
             <div className="p-4 space-y-2">
               {Object.entries(typeBreakdown).map(([type, count]) => (
                 <div key={type} className="flex items-center justify-between">
@@ -132,7 +140,9 @@ export default async function TestPage({ params }: Props) {
 
           {Object.keys(subjectBreakdown).length > 1 && (
             <div className="card-neo p-0 overflow-hidden">
-              <div className="px-4 py-3 border-b-2 border-ink-900 bg-ink-50"><span className="section-label">Topics Covered</span></div>
+              <div className="px-4 py-3 border-b-2 border-ink-900 bg-ink-50">
+                <span className="section-label">Topics Covered</span>
+              </div>
               <div className="p-4 space-y-2 max-h-48 overflow-y-auto">
                 {Object.entries(subjectBreakdown).map(([topic, count]) => (
                   <div key={topic} className="flex items-center justify-between">
